@@ -5,12 +5,12 @@
 # @Author    :ybxiao
 
 
-import torch
 import torch.nn as nn
 from transformers import BertModel
 from crf import CRF
 
 
+# 基于LSTM的NER模型
 class LstmModel(nn.Module):
     def __init__(self, vocab2idx, label2idx, embed_size=None, hidden_size=None, use_crf=True):
         super(LstmModel, self).__init__()
@@ -25,6 +25,7 @@ class LstmModel(nn.Module):
                             batch_first=True, bidirectional=True)
         self.dropout = nn.Dropout(0.3)
         self.linear = nn.Linear(self.hidden_size, self.n_labels)
+        self.loss_func = nn.CrossEntropyLoss()
 
     def forwards(self, input_ids, label_ids=None, mask=None):
         embed = self.embedding(input_ids)               # (batch, seq_len, embed_size)
@@ -37,29 +38,33 @@ class LstmModel(nn.Module):
                 best_path = crf.decode(emissions=logits, mask=mask, nbest=1)
                 return best_path, loss
             else:
-                loss_func = nn.CrossEntropyLoss(ignore_index=0)
                 preds = logits.view(-1, logits.size(-1))
                 targets = label_ids.view(-1)
-                loss = loss_func(preds, targets)
+                loss = self.loss_func(preds, targets)
                 return logits, loss
         else:
             return logits
 
 
+# 基于BERT的NER模型
 class BERTModel(nn.Module):
-    def __init__(self, bert_path, label2idx):
+    def __init__(self, bert_path, label2idx, use_crf=False):
         super(BERTModel, self).__init__()
         self.n_labels = len(label2idx)
         self.bert = BertModel.from_pretrained(bert_path)
-        self.loss_func = nn.CrossEntropyLoss(ignore_index=0)
+        self.loss_func = nn.CrossEntropyLoss()
+        self.linear = nn.Linear(768, self.n_labels)
+        self.use_crf = use_crf
 
-    def forwards(self, input_ids=None, label_ids=None, attn_mask=None):
-        output = self.bert(input_ids=input_ids, attention_mask=attn_mask)
+    def forwards(self, input_ids=None, label_ids=None, mask=None):
+        output = self.bert(input_ids=input_ids, attention_mask=mask)
         sequence_out, pool_out = output
+        logits = self.linear(sequence_out)
         if label_ids is not None:
-            bert_out = sequence_out.view(-1, sequence_out.size(-1))
-            label_ids = label_ids.view(-1)
-            loss = self.loss_func(bert_out, label_ids)
-            return loss
+            if not self.use_crf:
+                logits = logits.view(-1, logits.size(-1))         # (batch * seq_len, n_labels)
+                label_ids = label_ids.view(-1)                    # (batch * seq_len, )
+                loss = self.loss_func(logits, label_ids)
+                return logits, loss
         else:
-            return sequence_out
+            return logits
